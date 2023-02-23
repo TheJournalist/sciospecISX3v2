@@ -1,3 +1,4 @@
+import math
 import struct
 import time
 import serial
@@ -13,7 +14,6 @@ M = Fore.MAGENTA
 Y = Fore.YELLOW
 GY = Fore.LIGHTBLACK_EX
 RST = Style.RESET_ALL
-
 
 colorama_init()
 
@@ -31,7 +31,7 @@ ser = serial.Serial(
         inter_byte_timeout=None,
         exclusive=None)
 
-def readAck(t = 1):
+def readAck(t = 0.1):
     timeout = time.time() + t
     data = []
     while ser.inWaiting() or time.time() - timeout < 0.0:
@@ -51,19 +51,37 @@ def readAck(t = 1):
             print(G + 'OK System-Ready Message:' + RST +  ' System is operational and ready to receive data')
         elif data[2] == 0x04:
             print(G + 'OK Wake-Up Message:' + RST +  ' System boot ready')
+    print('')
 
-def readSerialData(t = 1.0, alternateHex=False):
+def readSerialData(t = 0.1, alternateHex=False):
     timeout = time.time() + t
     data = []
     while ser.inWaiting() or time.time() - timeout < 0.0:
         if ser.inWaiting() > 0:
             data += ser.read(ser.inWaiting())
             timeout = time.time() + t
+
+    if len(data) == 0:
+        return
+
     print(B + 'sciospec' + RST + ' >> ', end='')
     if(alternateHex):
         print('0x' + ''.join('{:02X}'.format(x) for x in data))
     else:
         print(str([hex(int(x)) for x in data]))
+
+    # Measurement data
+    if data[0] == 0xb8 and data[1] == 0x0e:
+        raw_meas_data = data
+
+        for i in range(int(len(raw_meas_data)/17)):
+            id = (raw_meas_data[i*17+2]<<8) + (raw_meas_data[i*17+3])
+            ts = (raw_meas_data[i*17+4]<<24) + (raw_meas_data[i*17+5] << 16) + (raw_meas_data[i*17+6] << 8) + (raw_meas_data[i*17+7])
+            re = struct.unpack('!f', bytes(bytearray([raw_meas_data[i*17+8],raw_meas_data[i*17+9],raw_meas_data[i*17+10],raw_meas_data[i*17+11]])))[0]
+            im = struct.unpack('!f', bytes(bytearray([raw_meas_data[i * 17 + 12], raw_meas_data[i * 17 + 13], raw_meas_data[i * 17 + 14],raw_meas_data[i * 17 + 15]])))[0]
+            mag = math.sqrt(pow(re,2) + pow(im,2))
+            ph = math.degrees(math.atan2(im,re))
+            print(id, ts, re, im, mag, ph)
     return data
 
 def sendMsg(desc, msg):
@@ -77,6 +95,14 @@ def ftoba(f):
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
 
+    # Stop Continuos Measurement
+    #sendMsg('Stop Measurement', bytes.fromhex('B80100B8'))
+    #readAck(1)
+
+    # System RST
+    #sendMsg('System RST', bytes.fromhex('A100A1'))
+    #readAck(1)
+
     # Read ID
     sendMsg('Read ID', bytes.fromhex('D100D1'))
     readSerialData(alternateHex=True)
@@ -86,12 +112,12 @@ if __name__ == '__main__':
     readAck()
 
     # Settings
-    startFrequency = 500
-    stopFrequency = int(5e6)
-    frequencyCount = 80
-    precision = 1
-    amplitude = 1
-    scale = 1
+    startFrequency = 10000
+    stopFrequency = int(1e6)
+    frequencyCount = 20
+    precision = 2
+    amplitude = 0.25
+    scale = 1 # 0:LINEAR  1:LOG
 
     msg = bytes([0xB6, 0x16, 0x03]) + \
           ftoba(startFrequency) + \
@@ -104,22 +130,37 @@ if __name__ == '__main__':
     sendMsg('Settings', msg)
     readAck()
 
+    # Set Timestamp option
+    msg = bytes([0x97, 0x02, 0x01, 0x01, 0x97])
+    sendMsg('Timestamp setting', msg)
+    readAck()
+
     # Set FrontEnd Settings
     measureMode = 0x02  # 4PointMode
-    channel = 0x02  # BNC
-    rangeSetting = 0x03  # 100k
+    channel = 0x01  # BNC
+    rangeSetting = 0x04  # 0x01: 100R    0x02: 10k    0x04: 1M
     msg = bytes([0xB0, 0x03, measureMode, channel, rangeSetting, 0xB0])
+
+    '''
+    The device has a stack length of 1 (ISX-3) or 2 (ISX-3 mini or ISX-3 with second channel option or
+    InternalMux). So only 1 (or 2) FE settings can be stored. Sending the set FE settings command
+    more than 1 (or 2) times results in a NACK return. Send following command to empty the stack:
+    B0 03 FF FF FF B0
+    '''
+    sendMsg('FrontEnd clear', [0xB0, 0x03, 0xFF, 0xFF, 0xFF, 0xB0])
+    readAck()
+
     sendMsg('FrontEnd Settings', msg)
     readAck()
 
     # Start Measurement
-    numberOfMeas = 1
+    numberOfMeas = 2 # 0: continuos
     msg = bytes([0xB8, 0x03, 0x01]) + \
           numberOfMeas.to_bytes(2, byteorder='big') + \
           bytes([0xB8])
     sendMsg('Start Measurement', msg)
-    readAck()
+    readAck(1)
 
     # Receive Meas
     while True:
-        data = readSerialData(5)
+        data = readSerialData()
