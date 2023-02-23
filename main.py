@@ -2,6 +2,7 @@ import math
 import struct
 import time
 import serial
+from prettytable import PrettyTable
 from ieee754 import IEEE754
 from colorama import init as colorama_init
 from colorama import Fore
@@ -14,6 +15,8 @@ M = Fore.MAGENTA
 Y = Fore.YELLOW
 GY = Fore.LIGHTBLACK_EX
 RST = Style.RESET_ALL
+
+frq_list = []
 
 colorama_init()
 
@@ -64,24 +67,51 @@ def readSerialData(t = 0.1, alternateHex=False):
     if len(data) == 0:
         return
 
-    print(B + 'sciospec' + RST + ' >> ', end='')
+    print(B + 'sciospec' + RST + ' >> ' + GY + 'ans[' + str(len(data)) + "] > ", end='')
     if(alternateHex):
-        print('0x' + ''.join('{:02X}'.format(x) for x in data))
+        print(GY + '0x' + ''.join('{:02X}'.format(x) for x in data) + RST + '\r\n')
     else:
-        print(str([hex(int(x)) for x in data]))
+        print(GY + str([hex(int(x)) for x in data]) + RST+ '\r\n')
+
+    # Frequency list
+    if data[0] == 0xb7 and data[2] == 0x04:
+        frq_list.clear()
+        for i in range(int(len(data)/4) - 2):
+            f = struct.unpack('!f', bytes(bytearray([data[3 + i*4], data[3 + i*4 + 1], data[3 + i*4 + 2], data[3 + i*4 + 3]])))[0]
+            frq_list.append(f)
+            #print(f"{f:.04f}")
+
+        print(G + "Frequency List" + RST)
+        print(frq_list, '\r\n')
 
     # Measurement data
     if data[0] == 0xb8 and data[1] == 0x0e:
         raw_meas_data = data
-
+        print(G + "Measurement Data" + RST)
+        t = PrettyTable(['n', 'timestamp (s)', 'frq (Hz)', 'w (rad)', 'Re', 'Im', 'Mag', 'Ph (deg)', 'Ls (H)','Cs (F)','Rs (Ohm)','Lp (H)','Cp (F)','Rp (Ohm)','Q','D','Xs','Gp','Bp'])
         for i in range(int(len(raw_meas_data)/17)):
             id = (raw_meas_data[i*17+2]<<8) + (raw_meas_data[i*17+3])
-            ts = (raw_meas_data[i*17+4]<<24) + (raw_meas_data[i*17+5] << 16) + (raw_meas_data[i*17+6] << 8) + (raw_meas_data[i*17+7])
+            ts = (raw_meas_data[i * 17 + 4] << 24) + (raw_meas_data[i * 17 + 5] << 16) + (raw_meas_data[i * 17 + 6] << 8) + (raw_meas_data[i * 17 + 7])
+            w = 2 * math.pi * frq_list[id]
             re = struct.unpack('!f', bytes(bytearray([raw_meas_data[i*17+8],raw_meas_data[i*17+9],raw_meas_data[i*17+10],raw_meas_data[i*17+11]])))[0]
             im = struct.unpack('!f', bytes(bytearray([raw_meas_data[i * 17 + 12], raw_meas_data[i * 17 + 13], raw_meas_data[i * 17 + 14],raw_meas_data[i * 17 + 15]])))[0]
             mag = math.sqrt(pow(re,2) + pow(im,2))
             ph = math.degrees(math.atan2(im,re))
-            print(id, ts, re, im, mag, ph)
+            Rs = re
+            Xs = im
+            Gp = 1/re
+            Bp = 1/im
+            Cs = -1/(w*Xs)
+            Cp = Bp/w
+            Ls = Xs / w
+            Lp = -1 / (w * Bp)
+            Rp = 1 / Gp
+            Q = Xs / Rs
+            D = -1 / Q
+
+            t.add_row([id,ts,frq_list[id],w,re,im,mag,ph,Ls,Cs,Rs,Lp,Cp,Rp,Q,D,Xs,Gp,Bp])
+        print(t)
+
     return data
 
 def sendMsg(desc, msg):
@@ -112,12 +142,12 @@ if __name__ == '__main__':
     readAck()
 
     # Settings
-    startFrequency = 10000
+    startFrequency = 1000
     stopFrequency = int(1e6)
     frequencyCount = 20
     precision = 2
     amplitude = 0.25
-    scale = 1 # 0:LINEAR  1:LOG
+    scale = 1  # 0:LINEAR  1:LOG
 
     msg = bytes([0xB6, 0x16, 0x03]) + \
           ftoba(startFrequency) + \
@@ -130,6 +160,10 @@ if __name__ == '__main__':
     sendMsg('Settings', msg)
     readAck()
 
+    # Get Frequency List
+    sendMsg('Get Frequency List', bytes.fromhex('B70104B7'))
+    readSerialData()
+
     # Set Timestamp option
     msg = bytes([0x97, 0x02, 0x01, 0x01, 0x97])
     sendMsg('Timestamp setting', msg)
@@ -138,7 +172,7 @@ if __name__ == '__main__':
     # Set FrontEnd Settings
     measureMode = 0x02  # 4PointMode
     channel = 0x01  # BNC
-    rangeSetting = 0x04  # 0x01: 100R    0x02: 10k    0x04: 1M
+    rangeSetting = 0x02  # 0x01: 100R    0x02: 10k    0x04: 1M
     msg = bytes([0xB0, 0x03, measureMode, channel, rangeSetting, 0xB0])
 
     '''
