@@ -8,6 +8,26 @@ from colorama import init as colorama_init
 from colorama import Fore
 from colorama import Style
 
+
+
+# Settings
+startFrequency = 1000
+stopFrequency = int(1e6)
+frequencyCount = 10
+precision = 0.1
+amplitude = 0.25
+scale = 1               # 0:Linear  1:Log
+
+# Set FrontEnd Settings
+measureMode = 0x02      # 4PointMode
+channel = 0x01          # BNC
+rangeSetting = 0x02     # 0x01: 100R    0x02: 10k    0x04: 1M
+
+# Measurement
+numberOfMeas = 5        # 0: continuos
+
+
+
 R = Fore.RED
 G = Fore.GREEN
 B = Fore.BLUE
@@ -22,7 +42,7 @@ colorama_init()
 
 ser = serial.Serial(
         port='COM6',
-        baudrate=115200,
+        baudrate=2000000,
         parity=serial.PARITY_NONE,
         stopbits=serial.STOPBITS_ONE,
         bytesize=serial.EIGHTBITS,
@@ -142,13 +162,6 @@ if __name__ == '__main__':
     readAck()
 
     # Settings
-    startFrequency = 1000
-    stopFrequency = int(1e6)
-    frequencyCount = 20
-    precision = 2
-    amplitude = 0.25
-    scale = 1  # 0:LINEAR  1:LOG
-
     msg = bytes([0xB6, 0x16, 0x03]) + \
           ftoba(startFrequency) + \
           ftoba(stopFrequency) + \
@@ -170,9 +183,6 @@ if __name__ == '__main__':
     readAck()
 
     # Set FrontEnd Settings
-    measureMode = 0x02  # 4PointMode
-    channel = 0x01  # BNC
-    rangeSetting = 0x02  # 0x01: 100R    0x02: 10k    0x04: 1M
     msg = bytes([0xB0, 0x03, measureMode, channel, rangeSetting, 0xB0])
 
     '''
@@ -188,7 +198,6 @@ if __name__ == '__main__':
     readAck()
 
     # Start Measurement
-    numberOfMeas = 2 # 0: continuos
     msg = bytes([0xB8, 0x03, 0x01]) + \
           numberOfMeas.to_bytes(2, byteorder='big') + \
           bytes([0xB8])
