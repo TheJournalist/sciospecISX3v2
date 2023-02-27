@@ -1,32 +1,40 @@
 import math
+import os
 import struct
 import time
+
+import numpy as np
+import pandas as pd
 import serial
 from prettytable import PrettyTable
 from ieee754 import IEEE754
 from colorama import init as colorama_init
 from colorama import Fore
 from colorama import Style
-
+from pathlib import Path
+import matplotlib.pyplot as plt
+from impedance.visualization import plot_nyquist,  plot_bode
+from impedance import preprocessing
 
 
 # Settings
 startFrequency = 1000
-stopFrequency = int(1e6)
-frequencyCount = 10
-precision = 0.1
+stopFrequency = int(2e6)
+frequencyCount = 50
+precision = 2
 amplitude = 0.25
 scale = 1               # 0:Linear  1:Log
 
 # Set FrontEnd Settings
 measureMode = 0x02      # 4PointMode
 channel = 0x01          # BNC
-rangeSetting = 0x02     # 0x01: 100R    0x02: 10k    0x04: 1M
+rangeSetting = 0x01     # 0x01: 100R    0x02: 10k    0x04: 1M
 
 # Measurement
-numberOfMeas = 5        # 0: continuos
+numberOfMeas = 1        # 0: continuos
 
 
+ztable = PrettyTable(['n', 'timestamp (s)', 'frq (Hz)', 'w (rad)', 'Re', 'Im', 'Mag', 'Ph (deg)', 'Ls (H)','Cs (F)','Rs (Ohm)','Lp (H)','Cp (F)','Rp (Ohm)','Q','D','Xs','Gp','Bp'])
 
 R = Fore.RED
 G = Fore.GREEN
@@ -37,7 +45,6 @@ GY = Fore.LIGHTBLACK_EX
 RST = Style.RESET_ALL
 
 frq_list = []
-
 colorama_init()
 
 ser = serial.Serial(
@@ -108,7 +115,11 @@ def readSerialData(t = 0.1, alternateHex=False):
     if data[0] == 0xb8 and data[1] == 0x0e:
         raw_meas_data = data
         print(G + "Measurement Data" + RST)
-        t = PrettyTable(['n', 'timestamp (s)', 'frq (Hz)', 'w (rad)', 'Re', 'Im', 'Mag', 'Ph (deg)', 'Ls (H)','Cs (F)','Rs (Ohm)','Lp (H)','Cp (F)','Rp (Ohm)','Q','D','Xs','Gp','Bp'])
+        queryTime = time.time() - readSerialData.lastMeasTime
+        readSerialData.lastMeasTime = time.time()
+        print("Query time: ", queryTime)
+        print()
+
         for i in range(int(len(raw_meas_data)/17)):
             id = (raw_meas_data[i*17+2]<<8) + (raw_meas_data[i*17+3])
             ts = (raw_meas_data[i * 17 + 4] << 24) + (raw_meas_data[i * 17 + 5] << 16) + (raw_meas_data[i * 17 + 6] << 8) + (raw_meas_data[i * 17 + 7])
@@ -129,8 +140,11 @@ def readSerialData(t = 0.1, alternateHex=False):
             Q = Xs / Rs
             D = -1 / Q
 
-            t.add_row([id,ts,frq_list[id],w,re,im,mag,ph,Ls,Cs,Rs,Lp,Cp,Rp,Q,D,Xs,Gp,Bp])
-        print(t)
+            ztable.add_row([id,ts,frq_list[id],w,re,im,mag,ph,Ls,Cs,Rs,Lp,Cp,Rp,Q,D,Xs,Gp,Bp])
+
+            with open('data.csv', 'a') as file:
+                file.write(str(frq_list[id]) + ", " + str(re) + ", " + str(im) + '\n')
+        print(ztable)
 
     return data
 
@@ -199,11 +213,45 @@ if __name__ == '__main__':
 
     # Start Measurement
     msg = bytes([0xB8, 0x03, 0x01]) + \
-          numberOfMeas.to_bytes(2, byteorder='big') + \
+          (numberOfMeas + 1).to_bytes(2, byteorder='big') + \
           bytes([0xB8])
+    readSerialData.lastMeasTime = time.time()
     sendMsg('Start Measurement', msg)
     readAck(1)
 
     # Receive Meas
-    while True:
-        data = readSerialData()
+
+    for i in range(numberOfMeas):
+
+        if Path('./data.csv').is_file():
+            os.remove('./data.csv')
+
+        while not Path('./data.csv').is_file():
+            data = readSerialData()
+
+        # Load EIS data
+        f, Z = preprocessing.readCSV('./data.csv')
+        f, Z = preprocessing.ignoreBelowX(f, Z)
+
+        mag = np.sqrt(np.power(Z.real, 2) + np.power(Z.imag, 2))
+        ph = np.rad2deg(np.arctan2(Z.imag, Z.real))
+
+        fig, axes = plt.subplots(nrows=3, ncols=1, squeeze=False, figsize=(5, 9))
+        plt.subplot(311)
+        plt.plot(Z.real, -Z.imag, '*r-')
+        plt.grid(True, which="both", ls="-")
+        plt.subplot(312)
+        plt.semilogx(f, mag, '*r-')
+        plt.grid(True, which="both", ls="-")
+        plt.subplot(313)
+        plt.semilogx(f, ph, '*r-')
+        plt.grid(True, which="both", ls="-")
+        fig.tight_layout(pad=5.0)
+        axes[0][0].set_title('Nyquist plot')
+        axes[0][0].set(xlabel="Z' (Ohm)", ylabel='Z" (Ohm)')
+        axes[1][0].set_title('Impedance Magnitude')
+        axes[1][0].set(xlabel="f (Hz)", ylabel='Mag (Ohm)')
+        axes[2][0].set_title('Impedance Phase')
+        axes[2][0].set(xlabel="f (Hz)", ylabel='Phase (deg)')
+        df = pd.DataFrame.from_records(ztable.rows, columns=ztable.field_names)
+        plt.show(block=True)
