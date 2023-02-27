@@ -2,22 +2,21 @@ import math
 import os
 import struct
 import time
+from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import serial
-from prettytable import PrettyTable
-from ieee754 import IEEE754
-from colorama import init as colorama_init
 from colorama import Fore
 from colorama import Style
-from pathlib import Path
-import matplotlib.pyplot as plt
-from impedance.visualization import plot_nyquist,  plot_bode
+from colorama import init as colorama_init
+from ieee754 import IEEE754
 from impedance import preprocessing
-
+from prettytable import PrettyTable
 
 # Settings
+printConsoleTable = False
 startFrequency = 1000
 stopFrequency = int(2e6)
 frequencyCount = 50
@@ -61,28 +60,6 @@ ser = serial.Serial(
         inter_byte_timeout=None,
         exclusive=None)
 
-def readAck(t = 0.1):
-    timeout = time.time() + t
-    data = []
-    while ser.inWaiting() or time.time() - timeout < 0.0:
-        if ser.inWaiting() > 0:
-            data += ser.read(ser.inWaiting())
-            timeout = time.time() + t
-
-    print(B + 'sciospec' + RST +' >> ', end='')
-    if len(data) > 3:
-        if data[2] == 0x81:
-            print(R + 'NACK Not-Acknowledge:' + RST + ' Command has not been executed')
-        elif data[2] == 0x82:
-            print(R + 'NACK Not-Acknowledge:' + RST +  ' Command could not be recognized')
-        elif data[2] == 0x83:
-            print(G + 'ACK Command-Acknowledge:' + RST +  ' Command has been executed successfully')
-        elif data[2] == 0x84:
-            print(G + 'OK System-Ready Message:' + RST +  ' System is operational and ready to receive data')
-        elif data[2] == 0x04:
-            print(G + 'OK Wake-Up Message:' + RST +  ' System boot ready')
-    print('')
-
 def readSerialData(t = 0.1, alternateHex=False):
     timeout = time.time() + t
     data = []
@@ -96,9 +73,27 @@ def readSerialData(t = 0.1, alternateHex=False):
 
     print(B + 'sciospec' + RST + ' >> ' + GY + 'ans[' + str(len(data)) + "] > ", end='')
     if(alternateHex):
-        print(GY + '0x' + ''.join('{:02X}'.format(x) for x in data) + RST + '\r\n')
+        print(GY + '0x' + ''.join('{:02X}'.format(x) for x in data) + RST)
     else:
-        print(GY + str([hex(int(x)) for x in data]) + RST+ '\r\n')
+        print(GY + str([hex(int(x)) for x in data]) + RST)
+
+    if len(data) > 3:
+        if data[0] == 0x18:
+            if data[2] == 0x81:
+                print(R + 'NACK Not-Acknowledge:' + RST + ' Command has not been executed')
+            elif data[2] == 0x82:
+                print(R + 'NACK Not-Acknowledge:' + RST + ' Command could not be recognized')
+            elif data[2] == 0x83:
+                print(G + 'ACK Command-Acknowledge:' + RST + ' Command has been executed successfully')
+            elif data[2] == 0x84:
+                print(G + 'OK System-Ready Message:' + RST + ' System is operational and ready to receive data')
+            elif data[2] == 0x04:
+                print(G + 'OK Wake-Up Message:' + RST + ' System boot ready')
+
+            data = data[4:] # After ACK
+
+    if len(data) == 0:
+        return
 
     # Frequency list
     if data[0] == 0xb7 and data[2] == 0x04:
@@ -108,8 +103,9 @@ def readSerialData(t = 0.1, alternateHex=False):
             frq_list.append(f)
             #print(f"{f:.04f}")
 
-        print(G + "Frequency List" + RST)
-        print(frq_list, '\r\n')
+
+        print(G + "Frequency List" + RST + " ", end="")
+        print(frq_list)
 
     # Measurement data
     if data[0] == 0xb8 and data[1] == 0x0e:
@@ -144,7 +140,9 @@ def readSerialData(t = 0.1, alternateHex=False):
 
             with open('data.csv', 'a') as file:
                 file.write(str(frq_list[id]) + ", " + str(re) + ", " + str(im) + '\n')
-        print(ztable)
+
+        if printConsoleTable:
+            print(ztable)
 
     return data
 
@@ -173,7 +171,7 @@ if __name__ == '__main__':
 
     # Initialize setup
     sendMsg('Initialize setup', bytes.fromhex('B60101B6'))
-    readAck()
+    readSerialData()
 
     # Settings
     msg = bytes([0xB6, 0x16, 0x03]) + \
@@ -185,7 +183,7 @@ if __name__ == '__main__':
           ftoba(amplitude) + \
           bytes([0xB6])
     sendMsg('Settings', msg)
-    readAck()
+    readSerialData()
 
     # Get Frequency List
     sendMsg('Get Frequency List', bytes.fromhex('B70104B7'))
@@ -194,7 +192,23 @@ if __name__ == '__main__':
     # Set Timestamp option
     msg = bytes([0x97, 0x02, 0x01, 0x01, 0x97])
     sendMsg('Timestamp setting', msg)
-    readAck()
+    readSerialData()
+
+    # Check Sync Time Setting
+    #sendMsg('Check Sync Time Setting', bytes.fromhex('BA00BA'))
+    #readSerialData(alternateHex=True)
+
+    # Clear sync
+    #sendMsg('Clear Sync Time Setting', bytes.fromhex('B90400000000B9'))
+    #readSerialData()
+
+    # Store sync
+    #sendMsg('Store sync', bytes.fromhex('90 00 90'))
+    #readSerialData(2.0)
+
+    # Check Sync Time Setting
+    #sendMsg('Check Sync Time Setting', bytes.fromhex('BA00BA'))
+    #readSerialData(1.0, alternateHex=True)
 
     # Set FrontEnd Settings
     msg = bytes([0xB0, 0x03, measureMode, channel, rangeSetting, 0xB0])
@@ -206,23 +220,21 @@ if __name__ == '__main__':
     B0 03 FF FF FF B0
     '''
     sendMsg('FrontEnd clear', [0xB0, 0x03, 0xFF, 0xFF, 0xFF, 0xB0])
-    readAck()
+    readSerialData()
 
     sendMsg('FrontEnd Settings', msg)
-    readAck()
+    readSerialData()
 
     # Start Measurement
     msg = bytes([0xB8, 0x03, 0x01]) + \
-          (numberOfMeas + 1).to_bytes(2, byteorder='big') + \
+          (numberOfMeas).to_bytes(2, byteorder='big') + \
           bytes([0xB8])
     readSerialData.lastMeasTime = time.time()
     sendMsg('Start Measurement', msg)
-    readAck(1)
+    #readSerialData(1)
 
     # Receive Meas
-
     for i in range(numberOfMeas):
-
         if Path('./data.csv').is_file():
             os.remove('./data.csv')
 
@@ -254,4 +266,9 @@ if __name__ == '__main__':
         axes[2][0].set_title('Impedance Phase')
         axes[2][0].set(xlabel="f (Hz)", ylabel='Phase (deg)')
         df = pd.DataFrame.from_records(ztable.rows, columns=ztable.field_names)
-        plt.show(block=True)
+        #pd.DataFrame.to_csv("table.csv")
+        #plt.show(block=True)
+        plt.show()
+        plt.pause(0.05)
+        ser.flushInput()
+        ser.flushOutput()
