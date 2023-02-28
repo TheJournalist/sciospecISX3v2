@@ -265,8 +265,9 @@ if __name__ == '__main__':
         axes[1][0].set(xlabel="f (Hz)", ylabel='Mag (Ohm)')
         axes[2][0].set_title('Impedance Phase')
         axes[2][0].set(xlabel="f (Hz)", ylabel='Phase (deg)')
+
         df = pd.DataFrame.from_records(ztable.rows, columns=ztable.field_names)
-        #pd.DataFrame.to_csv("table.csv")
+        pd.DataFrame.to_csv(df, "table.csv", index=False)
         #plt.show(block=True)
         plt.show()
         plt.pause(0.05)
