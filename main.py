@@ -23,9 +23,9 @@ from PySide6.QtUiTools import QUiLoader
 # Settings
 printConsoleTable = True
 startFrequency = 10
-stopFrequency = int(10e6)
-frequencyCount = 50
-precision = 0.2
+stopFrequency = int(10 * 1e6)
+frequencyCount = 100
+precision = 2
 amplitude = 0.25
 scale = 1  # 0:Linear  1:Log
 
@@ -55,7 +55,7 @@ colorama_init()
 
 ser = serial.Serial(
     port='COM9',
-    baudrate=12000000,
+    baudrate=2000000,
     parity=serial.PARITY_NONE,
     stopbits=serial.STOPBITS_ONE,
     bytesize=serial.EIGHTBITS,
@@ -67,20 +67,21 @@ ser = serial.Serial(
     inter_byte_timeout=None,
     exclusive=None)
 
+ser.flushInput()
+ser.flushOutput()
 
-def readSerialData(t=0.1, alternateHex=False):
-    timeout = time.time() + t
-    data = []
-    while ser.inWaiting() or time.time() - timeout < 0.0:
-        if ser.inWaiting() > 0:
-            data += ser.read(ser.inWaiting())
-            timeout = time.time() + t
+
+def readSerialData(expected, alternateHex=False):
+    while ser.inWaiting() < expected:
+        time.sleep(0.01)
+
+    data = ser.read(ser.inWaiting())
 
     if len(data) == 0:
         return
 
     print(B + 'sciospec' + RST + ' >> ' + GY + 'ans[' + str(len(data)) + "] > ", end='')
-    if (alternateHex):
+    if alternateHex:
         print(GY + '0x' + ''.join('{:02X}'.format(x) for x in data) + RST)
     else:
         print(GY + str([hex(int(x)) for x in data]) + RST)
@@ -106,10 +107,25 @@ def readSerialData(t=0.1, alternateHex=False):
     # Frequency list
     if data[0] == 0xb7 and data[2] == 0x04:
         frq_list.clear()
-        for i in range(int(len(data) / 4) - 2):
-            f = struct.unpack('!f', bytes(
-                bytearray([data[3 + i * 4], data[3 + i * 4 + 1], data[3 + i * 4 + 2], data[3 + i * 4 + 3]])))[0]
-            frq_list.append(f)
+
+        frames = [[]]
+        for nby in range(len(data) - 1):
+            if data[nby] == 0xb7 and data[nby + 1] == 0x04:
+                frames.append([])
+            else:
+                frames[-1].append(data[nby])
+
+        for k in range(len(frames)):
+            for i in range(int(len(frames[k]) / 4) - 1):
+
+                f = struct.unpack('!f', bytes(
+                    bytearray([frames[k][3 + i * 4], frames[k][3 + i * 4 + 1], frames[k][3 + i * 4 + 2],
+                               frames[k][3 + i * 4 + 3]])))[0]
+
+                if (i + 1) % 64 == 0:
+                    continue
+
+                frq_list.append(f)
             # print(f"{f:.04f}")
 
         print(G + "Frequency List" + RST + " ", end="")
@@ -126,16 +142,15 @@ def readSerialData(t=0.1, alternateHex=False):
 
         lspl = [[]]
         for datapointn in range(len(raw_meas_data) - 1):
-            if raw_meas_data[datapointn] == 0xb8 and raw_meas_data[datapointn + 1] == 0x0a:
+            if raw_meas_data[datapointn] == 0xb8 and raw_meas_data[datapointn + 1] == 0x0a and datapointn % 13 == 0:
                 lspl.append([])
             else:
                 lspl[-1].append(raw_meas_data[datapointn])
-
         lspl.remove([])
 
         for dataindex in range(len(lspl)):
             id = (lspl[dataindex][1] << 8) + (lspl[dataindex][2])
-            print(id, end=", ")
+            # print(id, end=", ")
             # ts = (raw_meas_data[i * 17 + 4] << 24) + (raw_meas_data[i * 17 + 5] << 16) + (
             #        raw_meas_data[i * 17 + 6] << 8) + (raw_meas_data[i * 17 + 7])
             w = 2 * math.pi * frq_list[id]
@@ -163,10 +178,6 @@ def readSerialData(t=0.1, alternateHex=False):
             with open('data.csv', 'a') as file:
                 file.write(str(frq_list[id]) + ", " + str(re) + ", " + str(im) + '\n')
 
-        print()
-        if printConsoleTable:
-            print(ztable)
-
     return data
 
 
@@ -178,7 +189,6 @@ def sendMsg(desc, msg):
 
 def ftoba(f):
     return bytearray.fromhex(IEEE754(f, 1).str2hex())
-
 
 
 if __name__ == '__main__':
@@ -214,11 +224,11 @@ if __name__ == '__main__':
 
     # Read ID
     sendMsg('Read ID', bytes.fromhex('D100D1'))
-    readSerialData(alternateHex=True)
+    readSerialData(19, alternateHex=True)
 
     # Initialize setup
     sendMsg('Initialize setup', bytes.fromhex('B60101B6'))
-    readSerialData()
+    readSerialData(4)
 
     # Settings
     msg = bytes([0xB6, 0x25, 0x03]) + \
@@ -230,16 +240,16 @@ if __name__ == '__main__':
           ftoba(amplitude) + \
           bytes([0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0xB6])
     sendMsg('Settings', msg)
-    readSerialData()
+    readSerialData(4)
 
     # Set Timestamp option         0x01
     msg = bytes([0x97, 0x02, 0x01, 0x00, 0x97])
     sendMsg('Timestamp setting', msg)
-    readSerialData()
+    readSerialData(4)
 
     # Get Frequency List
     sendMsg('Get Frequency List', bytes.fromhex('B70104B7'))
-    readSerialData()
+    readSerialData(4 * frequencyCount + 4 + 4 * math.ceil(frequencyCount / 64))
 
     for rangeSetting in range(4):
 
@@ -250,12 +260,12 @@ if __name__ == '__main__':
         B0 03 FF FF FF B0
         '''
         sendMsg('FrontEnd clear', [0xB0, 0x03, 0xFF, 0xFF, 0xFF, 0xB0])
-        readSerialData()
+        readSerialData(4)
 
         # Set FrontEnd Settings
         msg = bytes([0xB0, 0x03, measureMode, channel, rangeCodes[rangeSetting], 0xB0])
         sendMsg('FrontEnd Settings', msg)
-        readSerialData()
+        readSerialData(4)
 
         # Check Sync Time Setting
         # sendMsg('Check Sync Time Setting', bytes.fromhex('BA00BA'))
@@ -287,9 +297,9 @@ if __name__ == '__main__':
                 os.remove('./data.csv')
 
             while not Path('./data.csv').is_file():
-                data = readSerialData(1)
+                data = readSerialData(len(frq_list) * (2 + 2 + 4 + 4 + 1))
 
-            #time.sleep(1)
+            # time.sleep(1)
 
             # Load EIS data
             f, Z = preprocessing.readCSV('./data.csv')
@@ -301,10 +311,13 @@ if __name__ == '__main__':
             # if rangeSetting != 0:
             #    plt.figure()
 
+            #Zresult[numberOfMeas][rangeSetting][0] = Z.real
+            #Zresult[numberOfMeas][rangeSetting][1] = Z.imag
+
             plt.subplot(1, 3, 1)
             plt.plot(Z.real, -Z.imag, '*-')
-            #plt.xlim(-10e3, 10e3)
-            #plt.ylim(-10e3, 10e3)
+            # plt.xlim(-10e3, 10e3)
+            # plt.ylim(-10e3, 10e3)
             plt.grid(True, which="both", ls="-")
             plt.subplot(1, 3, 2)
             plt.loglog(f, mag, '*-')
@@ -312,7 +325,7 @@ if __name__ == '__main__':
             plt.subplot(1, 3, 3)
             plt.semilogx(f, ph, '*-')
             plt.grid(True, which="both", ls="-")
-            #fig.tight_layout(pad=5.0)
+            # fig.tight_layout(pad=5.0)
             axes[0][0].set_title('Nyquist plot')
             axes[0][0].set(xlabel="Z' (Ohm)", ylabel='Z" (Ohm)')
             axes[0][1].set_title('Impedance Magnitude')
@@ -322,6 +335,10 @@ if __name__ == '__main__':
 
             df = pd.DataFrame.from_records(ztable.rows, columns=ztable.field_names)
             pd.DataFrame.to_csv(df, "table.csv", index=False)
+
+            print()
+            if printConsoleTable:
+                print(ztable)
             ztable.clear()
 
     ser.flushInput()
@@ -331,5 +348,3 @@ if __name__ == '__main__':
     mng.full_screen_toggle()
     plt.show()
     plt.pause(0.05)
-
-
