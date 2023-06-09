@@ -8,25 +8,28 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy.ndimage import median_filter
 import serial
 from PySide6.QtCore import QFile, QIODevice
 from PySide6.QtWidgets import QApplication
 from colorama import Fore
 from colorama import Style
 from colorama import init as colorama_init
-from ieee754 import IEEE754
 from impedance import preprocessing
 from prettytable import PrettyTable
+from collections import deque
+from bisect import insort, bisect_left
+from itertools import islice
 
 from PySide6.QtUiTools import QUiLoader
 
 # Settings
 printConsoleTable = True
-startFrequency = 1
-stopFrequency = int(10 * 1e6)
+startFrequency = 10
+stopFrequency = 10 * 1e6
 frequencyCount = 100
-precision = 1
-amplitude = 0.01
+precision = 2
+amplitude = 0.1
 scale = 1  # 0:Linear  1:Log
 
 # Set FrontEnd Settings
@@ -56,7 +59,7 @@ colorama_init()
 
 ser = serial.Serial(
     port='COM9',
-    baudrate=2000000,
+    baudrate=20000000,
     parity=serial.PARITY_NONE,
     stopbits=serial.STOPBITS_ONE,
     bytesize=serial.EIGHTBITS,
@@ -70,6 +73,30 @@ ser = serial.Serial(
 
 ser.flushInput()
 ser.flushOutput()
+
+
+def float_to_hex(f):
+    return bytearray.fromhex(struct.pack('>f', float(f)).hex())
+
+
+def running_median_insort(seq, window_size):
+    """Contributed by Peter Otten"""
+    seq = iter(seq)
+    d = deque()
+    s = []
+    result = []
+    for item in islice(seq, window_size):
+        d.append(item)
+        insort(s, item)
+        result.append(s[len(d) // 2])
+    m = window_size // 2
+    for item in seq:
+        old = d.popleft()
+        d.append(item)
+        del s[bisect_left(s, old)]
+        insort(s, item)
+        result.append(s[m])
+    return result
 
 
 def readSerialData(expected, alternateHex=False):
@@ -119,7 +146,7 @@ def readSerialData(expected, alternateHex=False):
         for k in range(len(frames)):
             for i in range(int(len(frames[k]) / 4) - 1):
 
-                f = struct.unpack('!f', bytes(
+                f = struct.unpack('>f', bytes(
                     bytearray([frames[k][3 + i * 4], frames[k][3 + i * 4 + 1], frames[k][3 + i * 4 + 2],
                                frames[k][3 + i * 4 + 3]])))[0]
 
@@ -155,9 +182,9 @@ def readSerialData(expected, alternateHex=False):
             # ts = (raw_meas_data[i * 17 + 4] << 24) + (raw_meas_data[i * 17 + 5] << 16) + (
             #        raw_meas_data[i * 17 + 6] << 8) + (raw_meas_data[i * 17 + 7])
             w = 2 * math.pi * frq_list[id]
-            re = struct.unpack('!f', bytes(bytearray(
+            re = struct.unpack('>f', bytes(bytearray(
                 [lspl[dataindex][3], lspl[dataindex][4], lspl[dataindex][5], lspl[dataindex][6]])))[0]
-            im = struct.unpack('!f', bytes(bytearray(
+            im = struct.unpack('>f', bytes(bytearray(
                 [lspl[dataindex][7], lspl[dataindex][8], lspl[dataindex][9], lspl[dataindex][10]])))[0]
 
             mag = math.sqrt(pow(re, 2) + pow(im, 2))
@@ -186,10 +213,6 @@ def sendMsg(desc, msg):
     ser.write(msg)
     print(M + "computer" + RST + ' >> ' + Y + desc + RST + GY + ' - msg[' + str(len(msg)) + '] > ' + str(
         ['0x{:02X}'.format(x) for x in msg]) + RST)
-
-
-def ftoba(f):
-    return bytearray.fromhex(IEEE754(f, 1).str2hex())
 
 
 def find_nearest(array, value):
@@ -229,7 +252,7 @@ if __name__ == '__main__':
 
     fig, axes = plt.subplots(nrows=1, ncols=3, squeeze=False, figsize=(5, 9))
     ztable.field_names = ['n', 'frq (Hz)', 'w (rad)', 'Re', 'Im', 'Mag', 'Ph (deg)', 'Ls (H)', 'Cs (F)', 'Rs (Ohm)',
-     'Lp (H)', 'Cp (F)', 'Rp (Ohm)', 'Q', 'D', 'Xs', 'Gp', 'Bp']
+                          'Lp (H)', 'Cp (F)', 'Rp (Ohm)', 'Q', 'D', 'Xs', 'Gp', 'Bp']
 
     # Read ID
     sendMsg('Read ID', bytes.fromhex('D100D1'))
@@ -241,12 +264,12 @@ if __name__ == '__main__':
 
     # Settings
     msg = bytes([0xB6, 0x25, 0x03]) + \
-          ftoba(startFrequency) + \
-          ftoba(stopFrequency) + \
-          ftoba(frequencyCount) + \
+          float_to_hex(startFrequency) + \
+          float_to_hex(stopFrequency) + \
+          float_to_hex(frequencyCount) + \
           bytes([scale]) + \
-          ftoba(precision) + \
-          ftoba(amplitude) + \
+          float_to_hex(precision) + \
+          float_to_hex(amplitude) + \
           bytes([0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0xB6])
     sendMsg('Settings', msg)
     readSerialData(4)
@@ -344,39 +367,74 @@ if __name__ == '__main__':
             print(ztable)
         ztable.clear()
 
-    '''
     ZmagFinal = []
     ZphFinal = []
-    for dat in range(len(frq_list)):
-        quo = np.divide([Zmag[0][dat], Zmag[1][dat], Zmag[2][dat], Zmag[3][dat]], rangeValues[:])
-
-        bestFit = np.ndarray.tolist(quo).index(find_nearest(quo, 1))
-
-        ZmagFinal.append(Zmag[bestFit][dat])
-        ZphFinal.append(Zph[bestFit][dat])
-    '''
+    lastRange = 3
+    selectedRange = 3
 
     for n in range(4):
-        plt.subplot(1, 3, 1)
-        plt.grid(True, which="both", ls="-")
-        plt.subplot(1, 3, 2)
-        plt.loglog(frq_list, Zmag[n][:], '*-')
-        plt.grid(True, which="both", ls="-")
-        plt.subplot(1, 3, 3)
-        plt.semilogx(frq_list, Zph[n][:], '*-')
-        plt.grid(True, which="both", ls="-")
-        # fig.tight_layout(pad=5.0)
-        axes[0][0].set_title('Nyquist plot')
-        axes[0][0].set(xlabel="Z' (Ohm)", ylabel='Z" (Ohm)')
-        axes[0][1].set_title('Impedance Magnitude')
-        axes[0][2].set(xlabel="f (Hz)", ylabel='Mag (Ohm)')
-        axes[0][2].set_title('Impedance Phase')
-        axes[0][2].set(xlabel="f (Hz)", ylabel='Phase (deg)')
+        Zmag[n] = median_filter(Zmag[n], 5, mode='nearest')
+        Zph[n] = median_filter(Zph[n], 5, mode='nearest')
+
+    for dat in range(len(frq_list)):
+        # quo = np.divide([Zmag[0][dat], Zmag[1][dat], Zmag[2][dat], Zmag[3][dat]], rangeValues[:])
+        # bestFit = np.ndarray.tolist(quo).index(find_nearest(quo, 1))
+
+        if Zmag[0][dat] > 80000:
+            if Zmag[1][dat] > 400000:
+                if Zmag[2][dat] > 8000000:
+                    selectedRange = 3
+                else:
+                    selectedRange = 2
+            else:
+                selectedRange = 1
+        else:
+            selectedRange = 0
+
+        ZmagFinal.append(Zmag[selectedRange][dat])
+        ZphFinal.append(Zph[selectedRange][dat])
+
+        lastRange = selectedRange
+
+    ZmagFinal = median_filter(ZmagFinal, 5, mode='nearest')
+    ZphFinal = median_filter(ZphFinal, 5, mode='nearest')
+
+    for n in range(4):
+        plt.subplot(1, 2, 1)
+        plt.loglog(frq_list, Zmag[n][:], '.')
+
+        plt.subplot(1, 2, 2)
+        plt.semilogx(frq_list, Zph[n][:], '.')
+
+    plt.subplot(1, 2, 1)
+    plt.loglog(frq_list, ZmagFinal, '-')
+    plt.grid(True, which="both", ls="-")
+    plt.legend(["100R", "10k", "1M", "100M", "Stitched"])
+    plt.subplot(1, 2, 2)
+    plt.semilogx(frq_list, ZphFinal, '-')
+    plt.grid(True, which="both", ls="-")
+    plt.legend(["100R", "10k", "1M", "100M", "Stitched"])
+
+
+
+    plt.figure()
+    plt.subplot(1, 2, 1)
+    plt.loglog(frq_list, ZmagFinal, '-')
+    plt.grid(True, which="both", ls="-")
+    plt.subplot(1, 2, 2)
+    plt.semilogx(frq_list, ZphFinal, '-')
+    plt.grid(True, which="both", ls="-")
+
+    # fig.tight_layout(pad=5.0)
+    # axes[0][0].set_title('Impedance Magnitude')
+    # axes[0][0].set(xlabel="f (Hz)", ylabel='Mag (Ohm)')
+    # axes[0][1].set_title('Impedance Phase')
+    # axes[0][1].set(xlabel="f (Hz)", ylabel='Phase (deg)')
 
     ser.flushInput()
     ser.flushOutput()
 
-    #mng = plt.get_current_fig_manager()
-    #mng.full_screen_toggle()
+    # mng = plt.get_current_fig_manager()
+    # mng.full_screen_toggle()
     plt.show()
     plt.pause(0.05)
