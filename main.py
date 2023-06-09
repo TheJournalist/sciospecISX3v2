@@ -22,11 +22,11 @@ from PySide6.QtUiTools import QUiLoader
 
 # Settings
 printConsoleTable = True
-startFrequency = 10
+startFrequency = 1
 stopFrequency = int(10 * 1e6)
 frequencyCount = 100
-precision = 2
-amplitude = 0.25
+precision = 1
+amplitude = 0.01
 scale = 1  # 0:Linear  1:Log
 
 # Set FrontEnd Settings
@@ -34,6 +34,7 @@ measureMode = 0x02  # 4PointMode
 channel = 0x01  # BNC
 rangeSetting = 0
 rangeCodes = [0x01, 0x02, 0x04, 0x06]  # 0x01: 100R    0x02: 10k    0x04: 1M    0x06: 100M
+rangeValues = [100, 10000, 1000000, 100000000]
 
 # Measurement
 numberOfMeas = 1  # 0: continuos
@@ -191,6 +192,12 @@ def ftoba(f):
     return bytearray.fromhex(IEEE754(f, 1).str2hex())
 
 
+def find_nearest(array, value):
+    n = [abs(i - value) for i in array]
+    idx = n.index(min(n))
+    return array[idx]
+
+
 if __name__ == '__main__':
 
     '''
@@ -221,6 +228,8 @@ if __name__ == '__main__':
     # readAck(1)
 
     fig, axes = plt.subplots(nrows=1, ncols=3, squeeze=False, figsize=(5, 9))
+    ztable.field_names = ['n', 'frq (Hz)', 'w (rad)', 'Re', 'Im', 'Mag', 'Ph (deg)', 'Ls (H)', 'Cs (F)', 'Rs (Ohm)',
+     'Lp (H)', 'Cp (F)', 'Rp (Ohm)', 'Q', 'D', 'Xs', 'Gp', 'Bp']
 
     # Read ID
     sendMsg('Read ID', bytes.fromhex('D100D1'))
@@ -250,6 +259,9 @@ if __name__ == '__main__':
     # Get Frequency List
     sendMsg('Get Frequency List', bytes.fromhex('B70104B7'))
     readSerialData(4 * frequencyCount + 4 + 4 * math.ceil(frequencyCount / 64))
+
+    Zmag = []
+    Zph = []
 
     for rangeSetting in range(4):
 
@@ -289,62 +301,82 @@ if __name__ == '__main__':
               bytes([0xB8])
         readSerialData.lastMeasTime = time.time()
         sendMsg('Start Measurement', msg)
-        # readSerialData(1)
 
         # Receive Meas
-        for i in range(numberOfMeas):
-            if Path('./data.csv').is_file():
-                os.remove('./data.csv')
+        if Path('./data.csv').is_file():
+            os.remove('./data.csv')
 
-            while not Path('./data.csv').is_file():
-                data = readSerialData(len(frq_list) * (2 + 2 + 4 + 4 + 1))
+        while not Path('./data.csv').is_file():
+            data = readSerialData(len(frq_list) * (2 + 2 + 4 + 4 + 1))
 
-            # time.sleep(1)
+        # Load EIS data
+        f, Z = preprocessing.readCSV('./data.csv')
+        mag = np.sqrt(np.power(Z.real, 2) + np.power(Z.imag, 2))
+        ph = np.rad2deg(np.arctan2(Z.imag, Z.real))
 
-            # Load EIS data
-            f, Z = preprocessing.readCSV('./data.csv')
-            # f, Z = preprocessing.ignoreBelowX(f, Z)
+        Zmag.append(mag)
+        Zph.append(ph)
 
-            mag = np.sqrt(np.power(Z.real, 2) + np.power(Z.imag, 2))
-            ph = np.rad2deg(np.arctan2(Z.imag, Z.real))
+        # plt.subplot(1, 3, 1)
+        # plt.plot(Z.real, -Z.imag, '*-')
+        ## plt.xlim(-10e3, 10e3)
+        ## plt.ylim(-10e3, 10e3)
+        # plt.grid(True, which="both", ls="-")
+        # plt.subplot(1, 3, 2)
+        # plt.loglog(f, mag, '*-')
+        # plt.grid(True, which="both", ls="-")
+        # plt.subplot(1, 3, 3)
+        # plt.semilogx(f, ph, '*-')
+        # plt.grid(True, which="both", ls="-")
+        ## fig.tight_layout(pad=5.0)
+        # axes[0][0].set_title('Nyquist plot')
+        # axes[0][0].set(xlabel="Z' (Ohm)", ylabel='Z" (Ohm)')
+        # axes[0][1].set_title('Impedance Magnitude')
+        # axes[0][2].set(xlabel="f (Hz)", ylabel='Mag (Ohm)')
+        # axes[0][2].set_title('Impedance Phase')
+        # axes[0][2].set(xlabel="f (Hz)", ylabel='Phase (deg)')
 
-            # if rangeSetting != 0:
-            #    plt.figure()
+        df = pd.DataFrame.from_records(ztable.rows, columns=ztable.field_names)
+        pd.DataFrame.to_csv(df, "table.csv", index=False)
 
-            #Zresult[numberOfMeas][rangeSetting][0] = Z.real
-            #Zresult[numberOfMeas][rangeSetting][1] = Z.imag
+        print()
+        if printConsoleTable:
+            print(ztable)
+        ztable.clear()
 
-            plt.subplot(1, 3, 1)
-            plt.plot(Z.real, -Z.imag, '*-')
-            # plt.xlim(-10e3, 10e3)
-            # plt.ylim(-10e3, 10e3)
-            plt.grid(True, which="both", ls="-")
-            plt.subplot(1, 3, 2)
-            plt.loglog(f, mag, '*-')
-            plt.grid(True, which="both", ls="-")
-            plt.subplot(1, 3, 3)
-            plt.semilogx(f, ph, '*-')
-            plt.grid(True, which="both", ls="-")
-            # fig.tight_layout(pad=5.0)
-            axes[0][0].set_title('Nyquist plot')
-            axes[0][0].set(xlabel="Z' (Ohm)", ylabel='Z" (Ohm)')
-            axes[0][1].set_title('Impedance Magnitude')
-            axes[0][2].set(xlabel="f (Hz)", ylabel='Mag (Ohm)')
-            axes[0][2].set_title('Impedance Phase')
-            axes[0][2].set(xlabel="f (Hz)", ylabel='Phase (deg)')
+    '''
+    ZmagFinal = []
+    ZphFinal = []
+    for dat in range(len(frq_list)):
+        quo = np.divide([Zmag[0][dat], Zmag[1][dat], Zmag[2][dat], Zmag[3][dat]], rangeValues[:])
 
-            df = pd.DataFrame.from_records(ztable.rows, columns=ztable.field_names)
-            pd.DataFrame.to_csv(df, "table.csv", index=False)
+        bestFit = np.ndarray.tolist(quo).index(find_nearest(quo, 1))
 
-            print()
-            if printConsoleTable:
-                print(ztable)
-            ztable.clear()
+        ZmagFinal.append(Zmag[bestFit][dat])
+        ZphFinal.append(Zph[bestFit][dat])
+    '''
+
+    for n in range(4):
+        plt.subplot(1, 3, 1)
+        plt.grid(True, which="both", ls="-")
+        plt.subplot(1, 3, 2)
+        plt.loglog(frq_list, Zmag[n][:], '*-')
+        plt.grid(True, which="both", ls="-")
+        plt.subplot(1, 3, 3)
+        plt.semilogx(frq_list, Zph[n][:], '*-')
+        plt.grid(True, which="both", ls="-")
+        # fig.tight_layout(pad=5.0)
+        axes[0][0].set_title('Nyquist plot')
+        axes[0][0].set(xlabel="Z' (Ohm)", ylabel='Z" (Ohm)')
+        axes[0][1].set_title('Impedance Magnitude')
+        axes[0][2].set(xlabel="f (Hz)", ylabel='Mag (Ohm)')
+        axes[0][2].set_title('Impedance Phase')
+        axes[0][2].set(xlabel="f (Hz)", ylabel='Phase (deg)')
 
     ser.flushInput()
     ser.flushOutput()
 
-    mng = plt.get_current_fig_manager()
-    mng.full_screen_toggle()
+    #mng = plt.get_current_fig_manager()
+    #mng.full_screen_toggle()
     plt.show()
     plt.pause(0.05)
